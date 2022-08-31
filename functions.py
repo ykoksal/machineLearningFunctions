@@ -1242,8 +1242,9 @@ def model_isomap(df, model, model_name, featureCount, n_to_reach, SMOTEBool=Fals
     # Normalization
 #     scaler = MinMaxScaler()
 
-    # X_train_scaled = scaler.fit_transform(X_train)
-    # X_test_scaled = scaler.transform(X_test)
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+    
     # pca = PCA()    
     # X_iso_train = pca.fit_transform(X_train_scaled)
     
@@ -1256,14 +1257,14 @@ def model_isomap(df, model, model_name, featureCount, n_to_reach, SMOTEBool=Fals
     print("Starting ISOMAP...")
     start = time.time()
     iso = Isomap(n_components=n_to_reach)    
-    X_iso_train = pca.fit_transform(X_train_scaled)
+    X_iso_train = iso.fit_transform(X_train_scaled)
     X_iso_train = pd.DataFrame(X_iso_train)
     X_iso_train.index = X_train.index
     X_iso_train = pd.merge(X_iso_train, df[df.columns[-i:]], left_index=True, right_index=True)
     X_iso_train.columns = np.arange(X_iso_train.shape[1]) 
 
 
-    X_iso_test = pca.transform(X_test_scaled)
+    X_iso_test = iso.transform(X_test_scaled)
     X_iso_test = pd.DataFrame(X_iso_test)
     X_iso_test.index = X_test.index
     X_iso_test = pd.merge(X_iso_test, df[df.columns[-i:]], left_index=True, right_index=True)
