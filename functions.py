@@ -32,8 +32,9 @@ from sklearn.linear_model import BayesianRidge
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import (train_test_split, cross_val_score, GridSearchCV, RandomizedSearchCV, 
 RepeatedStratifiedKFold, StratifiedKFold)
-from sklearn.model_selection import StratifiedGroupKFold, permutation_test_score
+from sklearn.model_selection import StratifiedGroupKFold, GroupShuffleSplit, permutation_test_score
 from sklearn.pipeline import Pipeline
+from sklearn.utils import shuffle
 import matplotlib.pyplot as plt
 
 from sklearn.impute import KNNImputer
@@ -248,6 +249,8 @@ def outlier_removal(df_last):
     
     return df_last_out
 
+"""# FAA Transformation"""
+
 def avg_lr(df):
     df_avg_lr = df.copy()
     df_avg_lr.drop(df_avg_lr.iloc[:,9:], inplace=True, axis=1)
@@ -261,6 +264,17 @@ def avg_lr(df):
     df_avg_lr['Khbr_Avg'] = df.iloc[:,89:97].mean(axis=1) / df.iloc[:,97:105].mean(axis=1)
     df_avg_lr['Khbo_Avg'] = df.iloc[:,105:113].mean(axis=1) / df.iloc[:,113:121].mean(axis=1)
     df_avg_lr['Khbt_Avg'] = df.iloc[:,121:129].mean(axis=1) / df.iloc[:,129:137].mean(axis=1)
+
+    # df_avg_lr['Goxy_Avg9-16'] = df_cleaned.iloc[:,25:33].mean(axis=1)
+    return df_avg_lr
+
+"""# FAA Transformation with Creating a FAA Feature - 1 for left region and 0 for right region dominance"""
+
+def FAA_dominance(df):
+    df_avg_lr = df.copy()
+    
+    df_avg_lr['Goxy_FAA_Index'] = df.iloc[:,9:17].mean(axis=1) - df.iloc[:,17:25].mean(axis=1)
+    df_avg_lr['Koxy_FAA_Index'] = df.iloc[:,73:81].mean(axis=1) - df.iloc[:,81:89].mean(axis=1)
 
     # df_avg_lr['Goxy_Avg9-16'] = df_cleaned.iloc[:,25:33].mean(axis=1)
     return df_avg_lr
@@ -472,9 +486,24 @@ def df_GMM(df, clusters):
 
 """# Permutation Scores"""
 
-def permutationTest(model, X_train, Y_train, cv, groups):
+def permutation_test(fitted_model, X_test, Y_test, n_permutations):
+  fitted_model.predict(X_test)
+  score = fitted_model.score(X_test,Y_test)
+  permutation_scores = []
+  higher_count = 0
+  for i in range(n_permutations):
+    Y_test_perm = shuffle(Y_test,random_state=i) 
+    perm_score = fitted_model.score(X_test,Y_test_perm)
+    permutation_scores.append(perm_score)
+    if perm_score >= score:
+      higher_count += 1
+  p_value = (1 + higher_count) / (1+ n_permutations)
+
+  return score, permutation_scores, p_value
+
+def permutationTest(model, X_train, Y_train, cv, groups, n=50):
     score, perm_scores, pvalue = permutation_test_score(
-    model, X_train, Y_train, groups=groups, scoring="f1", cv=cv, n_permutations=50)
+    model, X_train, Y_train, groups=groups, scoring="accuracy", cv=cv, n_permutations=n)
     fig, ax = plt.subplots()
 
     ax.hist(perm_scores, bins=20, density=True)
@@ -484,6 +513,7 @@ def permutationTest(model, X_train, Y_train, cv, groups):
     ax.set_xlabel("F1 score")
     ax.set_ylabel("Probability")
     plt.show()
+    return
 
 def permutation_importance(model_, X_pca_train, Y_train):   
     # perform permutation importance
@@ -496,8 +526,6 @@ def permutation_importance(model_, X_pca_train, Y_train):
     # plot feature importance
     plt.bar([x for x in range(len(importance))], importance)
     plt.show()
-
-
 
 """# EXPLANIED VARIANCE RATIO AND FEATURE NUMBER"""
 
@@ -529,87 +557,104 @@ def n_to_reach(df,featureCount, variance):
           .format(n_to_reach, total_explained_variance[n_to_reach-1]))
     return n_to_reach
 
-"""# MAIN MODEL"""
+global lgb_param
+global rfc_param
+global svm_param
+global knn_param
+global xgb_param
+global pos_weight
+pos_weight = 0.88
 
-def main_model(df, model, model_name, featureCount, SMOTEBool=False):
-    
-    df = pd.concat([df[df.columns[8:]], df[df.columns[6]]], ignore_index=True, axis=1)
-    i = df.shape[1] - (featureCount + 1)
-    X_train, X_test, Y_train, Y_test = train_test_split(
-    df.iloc[:,1:-i], df.iloc[:,0], test_size=0.20, random_state=0)
-    print('MAIN RESULTS')
-    
-    param_grid = {}
-    pos_weight = sum(Y_train[Y_train == 0]) / sum(Y_train[Y_train == 1])
-    train_weight = sum(1 if x == 0 else 0 for x in Y_train)\
-                        /sum(1 if x == 1 else 0 for x in Y_train)
-    # Parameter tuning
-    if model_name == 'lgb':
-        
-        param_grid = {
-                    'boosting_type': ['dart'],
+lgb_param = {
+                    'boosting_type': ['gbtree','dart'],
                     'num_leaves': [16,48,96],
-                    'learning_rate': [0.01,0.03],
-                    'max_depth': [2, 3, 4],
-                    'max_bin': [500,1000],
+                    'learning_rate': [0.01, 0.03, 0.05, 0.1],
+                    'max_depth': [3,4,5],
+                    'max_bin': [10,50,100],
 #                     'n_estimators' : [500,1000]
 #                 'boosting_type': ['gbdt', 'goss', 'dart'],
 #                 'num_leaves': list(range(10, 20)),
 #                 'learning_rate': [0.01, 0.03, 0.05, 0.1],
 #                 'max_depth':list(range(1,12)),
 #                 'max_bin': list(range(2, 30)),
-                'num_iterations': list(range(50, 100)),
-                'early_stopping_rounds': list(range(1, 10)),
+                'num_iterations': [100,300,500],
+                'early_stopping_rounds': [5,10],
                 'scale_pos_weight': [pos_weight],
                 'n_jobs' : [-1],
-                'path_smooth': list(range(2,15)),
+                'path_smooth': [3,4,5],
                 'random_state': [0]
                      }
-    
-    elif model_name == 'rfc':
-        
-        param_grid = {'bootstrap': [True],
-                       'max_depth': [2, 3, 4],
-                       'n_estimators': [100, 300, 500],
+rfc_param =  {'bootstrap': [True],
+                       'max_depth': [3, 4, 5],
+                       'n_estimators': [300,500,1000],
                        'criterion' :['gini', 'entropy']
                      }
-        
-    elif model_name == 'SVM':
-        
-        param_grid = {'C': [0.01, 0.1, 1, 3, 5],
+svm_param = {'C': [0.01, 0.1, 1, 3, 5],
               'gamma': [1, 0.1, 0.01, 0.001, 0.0001],
               'kernel': ['linear']
                      }
-        
-    
-    elif model_name == 'KNN':
-        
-        param_grid = {'n_neighbors': list(range(3,21)),
+
+knn_param = {'n_neighbors': list(range(3,21)),
               'metric': ['euclidean']
-                     }
-        
-    elif model_name == 'XGB':
-        
-        
-        
-        param_grid = {'learning_rate':[0.01, 0.03, 0.05, 0.1],
-                'max_depth':[2,3,4],
-                'booster': ('gbtree', 'gblinear'),
+                   }
+
+xgb_param = {'learning_rate':[0.01, 0.03, 0.05, 0.1],
+                'max_depth':[3,4,5],
+                'booster': ['gbtree','dart'],
                 'random_state': [0],
                 'n_jobs': [-1],
                 'scale_pos_weight': [pos_weight],
                 'gamma': [1, 5, 10],
+                'n_estimators': [100,300,500],
                 'min_child_weight': list(range(3,8)),
                 'use_label_encoder': [False],
-                'early_stopping_rounds': list(range(3,10)),
+                'early_stopping_rounds':  [5,10],
                 'objective': ['binary:logistic'], 
                 'eval_metric': ['auc'],
                 'verbosity': [0]
                      }
-        
-        
-        
-       
+
+"""# MAIN MODEL"""
+
+def main_model(df, model, model_name, featureCount, SMOTEBool=False, distance='', cv_splits=5, random_state=0):
+    
+    df = pd.concat([df[df.columns[8:]], df[df.columns[6]]], ignore_index=True, axis=1)
+    i = df.shape[1] - (featureCount + 1)
+
+    # Group Split of Data into Train/Test
+    # X = df.iloc[:,1:-i]
+    # X.reset_index(inplace=True,drop=True)
+    # Y = df.iloc[:,0]
+    # Y.reset_index(inplace=True,drop=True)
+    # groups = df.iloc[:,-1:] 
+    # groups.reset_index(inplace=True,drop=True)
+
+    # gss = GroupShuffleSplit(n_splits=1, train_size=.8, random_state=0)
+    # gss.get_n_splits()
+    # for train_index, test_index in gss.split(X,Y, groups):
+    #   X_train, X_test = X.iloc[train_index], X.iloc[test_index]
+      # Y_train, Y_test = Y.iloc[train_index], Y.iloc[test_index]
+
+    X_train, X_test, Y_train, Y_test = train_test_split(
+    df.iloc[:,1:-i], df.iloc[:,0], test_size=0.20, random_state=random_state)
+    print('MAIN RESULTS')
+    # pos_weight = sum(Y_train[Y_train == 0]) / sum(Y_train[Y_train == 1])
+    # train_weight = sum(1 if x == 0 else 0 for x in Y_train)\
+    #                     /sum(1 if x == 1 else 0 for x in Y_train)
+
+    # Parameter tuning
+    param_grid = {}
+    if model_name == 'lgb':
+      param_grid=lgb_param
+    elif model_name == 'rfc':
+      param_grid=rfc_param 
+    elif model_name == 'SVM':
+       param_grid=svm_param
+    elif model_name == 'KNN':
+      param_grid=knn_param
+    elif model_name == 'XGB':
+      param_grid=xgb_param
+
     # Standardization
     scaler = StandardScaler()
     
@@ -637,8 +682,16 @@ def main_model(df, model, model_name, featureCount, SMOTEBool=False):
    
     groups = X_train.iloc[:,-1]
     X_train = X_train.iloc[:,:-1]
+    # groups = []
+    # for index, row in X_train.iterrows():
+    #   if row.iloc[-1] == 1:
+    #     groups.append(1)
+    #   elif row.iloc[-2] == 1:
+    #     groups.append(2)
+    #   elif row.iloc[-3] == 1:
+    #     groups.append(3)
+    # groups = pd.Series(groups)
 
-    
     #SMOTE for Train Data to Balance Dataset and also to Increase Data Size
     if SMOTEBool == True:
         print('SMOTE is being applied to the train set...')
@@ -646,14 +699,22 @@ def main_model(df, model, model_name, featureCount, SMOTEBool=False):
         X_train, Y_train = oversample.fit_resample(X_train, Y_train)
     
     # K-fold cross validation
-    print('Starting StratifiedGroupKFold...')
-    start = time.time()
-    cv = StratifiedGroupKFold(n_splits=5, random_state=1, shuffle=True)
-    cv_results = cross_val_score(model, X_train, Y_train, groups=groups, cv=cv, scoring='accuracy')
-    print('Cross Validation Accuracy: %.3f (%.3f)' % (np.mean(cv_results), np.std(cv_results)))
-    end = time.time()
-    print(f"Total Time of StratifiedGroupKFold = {str(datetime.timedelta(seconds=(end-start)))}")
-    
+    # print('Starting StratifiedGroupKFold...')
+    # start = time.time()
+    cv = StratifiedGroupKFold(n_splits=cv_splits, random_state=1, shuffle=True)
+    cv_results = cross_val_score(model, X_train, Y_train, groups=groups, cv=cv, scoring='accuracy', n_jobs=-1)
+    # print('Cross Validation Accuracy: %.3f (%.3f)' % (np.mean(cv_results), np.std(cv_results)))
+    # end = time.time()
+    # print(f"Total Time of StratifiedGroupKFold = {str(datetime.timedelta(seconds=(end-start)))}")
+
+    # Trial for Mahalanobis distance metric for KNN -- seems worse than euclidean so commented
+    # if model_name == 'KNN' and distance == 'mahalanobis':
+        
+    #     param_grid = {'n_neighbors': list(range(3,21)),
+    #           'metric': ['mahalanobis'],
+    #           'algorithm': ['brute'],
+    #           'metric_params': [{'VI': np.linalg.inv(np.cov(X_train))}]
+        # }
     # GridSearch for Hyperparameters
     print("Starting fitting into the model...")
     start = time.time()
@@ -686,6 +747,7 @@ def main_model(df, model, model_name, featureCount, SMOTEBool=False):
 #     print("Tuned Best Accuracy :", model_.best_score_)
     
     # Predictions
+    prediction = model_.predict(X_test)
     pred_prob = model_.predict_proba(X_test)
 #     print(pred_prob)
 
@@ -705,20 +767,19 @@ def main_model(df, model, model_name, featureCount, SMOTEBool=False):
     print('Train Accuracy Score:', model_.score(X_train, Y_train))   
     
     # Probability of predictions adjusted to new threshold
-    predict_model = [1 if y >= thresholds[ix] else 0 for y in pred_prob]
+    # predict_model = [1 if y >= thresholds[ix] else 0 for y in pred_prob]
     
     # Original threshold
-#     predict_model = [1 if y >= 0.5 else 0 for y in pred_prob]
-#     print(predict_model)
+    predict_model = [1 if y >= 0.5 else 0 for y in pred_prob]
+    predict_model = np.array(predict_model).reshape(-1,1)
 
-    
-    #print(predict_lgb)
-    print('Test Accuracy Score:', accuracy_score(Y_test, predict_model))
+    print('Test Accuracy Score:', model_.score(X_test,Y_test))
     print('AUC Score:', roc_auc_score(Y_test, predict_model))
     print('F1 Score:', f1_score(Y_test, predict_model))
     print('Precision Score:', precision_score(Y_test, predict_model))
     print('Recall Score:', recall_score(Y_test, predict_model))
     print('\n')
+
 #     print(classification_report(Y_test, predict_model))
 #     print('Confusion Matrix:', '\n', pd.DataFrame(confusion_matrix(Y_test, predict_model)))
     
@@ -726,7 +787,7 @@ def main_model(df, model, model_name, featureCount, SMOTEBool=False):
 #     score_test = model.score(X_test, Y_test)
     
 #     print(score_train, score_test)
-    return (f1_score(Y_test, predict_model), model, X_train, Y_train, cv, groups)
+    return [model_, X_test, Y_test, groups, cv_results]
 
 """# MODEL PCA"""
 
